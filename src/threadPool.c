@@ -39,18 +39,22 @@ void handleThreadError(ThreadPool* threadPool){
 void* doTasks(void *threadPoolVoid)
 {
     ThreadPool* threadPool = (ThreadPool*) threadPoolVoid;
-
-    if(pthread_cond_wait(&threadPool->cond,&threadPool->condMutex) != 0) {
-        handleThreadError(threadPool);
-    }
-
-    if(pthread_mutex_lock(&threadPool->threadPoolVarsMutex) != 0) {
-            handleThreadError(threadPool);
-    }
-    while(!threadPool->isStopped){
+    for(;;){
         Task* task = NULL;
-        if(!osIsQueueEmpty(threadPool->tasksQueue)){
-            task = osDequeue(threadPool->tasksQueue);
+        if(pthread_mutex_lock(&threadPool->threadPoolVarsMutex) != 0) {
+                handleThreadError(threadPool);
+        }
+
+        if(osIsQueueEmpty(threadPool->tasksQueue)){
+            if(pthread_cond_wait(&threadPool->cond,&threadPool->condMutex) != 0) {
+                handleThreadError(threadPool);
+            }  
+        }
+
+        task = osDequeue(threadPool->tasksQueue);
+
+        if(threadPool->isStopped){
+            break;
         }
 
         if(pthread_mutex_unlock(&threadPool->threadPoolVarsMutex) != 0) {
@@ -61,18 +65,10 @@ void* doTasks(void *threadPoolVoid)
             task->computeFunc(task->param);
             destroyTask(task);
         }
-
-        if(pthread_cond_wait(&threadPool->cond,&threadPool->condMutex) != 0) {
-            handleThreadError(threadPool);
-        }
-
-        if(pthread_mutex_lock(&threadPool->threadPoolVarsMutex) != 0) {
-            handleThreadError(threadPool);
-        }
     }
 
     if(pthread_mutex_unlock(&threadPool->threadPoolVarsMutex) != 0) {
-            handleThreadError(threadPool);
+        handleThreadError(threadPool);
     }
 
     return THREAD_SUCCESS_VAL;
