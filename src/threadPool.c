@@ -11,7 +11,7 @@ void destroyTask(Task* task){
     free(task);
 }
 
-void handleThreadError(ThreadPool* threadPool){
+void handleError(ThreadPool* threadPool){
     // we can't use mutex because it maybe already failed
     // we wil try to not allow 2 thead errors handle
     // by this if it's not promised it will work
@@ -21,7 +21,7 @@ void handleThreadError(ThreadPool* threadPool){
     }
     threadPool->isThreadErrorOccurred = TRUE;
 
-    perror("Error: ThreadPool: got an internal error inside a thread");
+    perror("Error: ThreadPool: got an internal error inside (mutex or condition)");
 
     int index;
     int myId = pthread_self();
@@ -32,8 +32,6 @@ void handleThreadError(ThreadPool* threadPool){
 
         pthread_cancel(threadPool->threadsIds[index]);
     }
-
-    pthread_exit(THREAD_ERROR_VAL);
 }
 
 void* doTasks(void *threadPoolVoid)
@@ -41,24 +39,27 @@ void* doTasks(void *threadPoolVoid)
     ThreadPool* threadPool = (ThreadPool*) threadPoolVoid;
     for(;;){
         Task* task = NULL;
-        if(pthread_mutex_lock(&threadPool->threadPoolVarsMutex) != 0) {
-                handleThreadError(threadPool);
+        if(pthread_mutex_lock(&threadPool->condMutex) != 0) {
+                handleError(threadPool);
+                pthread_exit(THREAD_ERROR_VAL);
         }
 
-        if(osIsQueueEmpty(threadPool->tasksQueue)){
+        if(!threadPool->isStopped && osIsQueueEmpty(threadPool->tasksQueue)){
             if(pthread_cond_wait(&threadPool->cond,&threadPool->condMutex) != 0) {
-                handleThreadError(threadPool);
+                handleError(threadPool);
+                pthread_exit(THREAD_ERROR_VAL);
             }  
         }
-
-        task = osDequeue(threadPool->tasksQueue);
 
         if(threadPool->isStopped){
             break;
         }
 
-        if(pthread_mutex_unlock(&threadPool->threadPoolVarsMutex) != 0) {
-            handleThreadError(threadPool);
+        task = osDequeue(threadPool->tasksQueue);
+
+        if(pthread_mutex_unlock(&threadPool->condMutex) != 0) {
+           handleError(threadPool);
+            pthread_exit(THREAD_ERROR_VAL);
         }
 
         if(task != NULL){
@@ -67,11 +68,27 @@ void* doTasks(void *threadPoolVoid)
         }
     }
 
-    if(pthread_mutex_unlock(&threadPool->threadPoolVarsMutex) != 0) {
-        handleThreadError(threadPool);
+    if(pthread_mutex_unlock(&threadPool->condMutex) != 0) {
+        handleError(threadPool);
+        pthread_exit(THREAD_ERROR_VAL);
     }
 
     return THREAD_SUCCESS_VAL;
+}
+
+void stopDoTasks(void* threadPoolVoid){
+    ThreadPool* threadPool = (ThreadPool*) threadPoolVoid;
+    if(pthread_mutex_lock(&threadPool->condMutex) != 0) {
+        handleError(threadPool);
+        return ERROR;
+    }
+
+    threadPool->isStopped = TRUE;
+
+    if(pthread_mutex_unlock(&threadPool->condMutex) != 0) {
+        handleError(threadPool);
+        return ERROR;
+    }
 }
 
 ThreadPool* tpCreate(int numOfThreads){
@@ -112,16 +129,6 @@ ThreadPool* tpCreate(int numOfThreads){
         free(threadPool);
         return NULL;
     }
-
-    if(pthread_mutex_init(&threadPool->threadPoolVarsMutex, NULL) != 0){
-        perror("Error: tpCreate: pthread_mutex_init: failed creating mutex");
-        pthread_mutex_destroy(&threadPool->condMutex);
-        pthread_cond_destroy(&threadPool->cond);
-        osDestroyQueue(threadPool->tasksQueue);
-        free(threadPool->threadsIds);
-        free(threadPool);
-        return NULL;
-    }
     
     threadPool->isDestroyed = FALSE;
     threadPool->isStopped = FALSE;
@@ -142,7 +149,30 @@ ThreadPool* tpCreate(int numOfThreads){
 }
 
 void tpDestroy(ThreadPool* threadPool, int shouldWaitForTasks){
+    if(threadPool == NULL){
+        return;
+    }
+    
+    threadPool->isDestroyed = TRUE;
 
+    if(pthread_mutex_lock(&threadPool->condMutex) != 0) {
+        handleError(threadPool);
+        return;
+    }
+
+    if(!shouldWaitForTasks){
+        while(!osIsQueueEmpty(threadPool->tasksQueue)){
+            Task* t = (Task*) osDequeue(threadPool->tasksQueue);
+            destroyTask(t);
+        }
+    }
+
+    if(pthread_mutex_unlock(&threadPool->condMutex) != 0) {
+        handleError(threadPool);
+        return;
+    }
+
+    tpInsertTask(threadPool, stopDoTasks, (void*) threadPool);
 }
 
 int tpInsertTask(ThreadPool* threadPool, void (*computeFunc) (void *), void* param){
@@ -154,5 +184,27 @@ int tpInsertTask(ThreadPool* threadPool, void (*computeFunc) (void *), void* par
         return SUCCESS;
     }
 
-    //////////////////////
+    Task* t = createTask();
+
+    t->computeFunc =  computeFunc;
+    t->param = param;
+
+    if(pthread_mutex_lock(&threadPool->condMutex) != 0) {
+        handleError(threadPool);
+        return ERROR;
+    }
+
+    osEnqueue(threadPool->tasksQueue, (void*) t);
+
+    if(pthread_mutex_unlock(&threadPool->condMutex) != 0) {
+        handleError(threadPool);
+        return ERROR;
+    }
+
+    if(pthread_cond_signal(&threadPool->cond) != 0) {
+        handleError(threadPool);
+        return ERROR;
+    }
+
+    return SUCCESS;
 }

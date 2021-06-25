@@ -25,7 +25,6 @@ typedef struct{
 typedef struct thread_pool
 {
     OSQueue* tasksQueue;
-    pthread_mutex_t threadPoolVarsMutex;
     pthread_mutex_t condMutex;
     pthread_cond_t cond;
     BOOL isDestroyed;
