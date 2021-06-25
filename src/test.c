@@ -3,7 +3,6 @@
 #include "osqueue.h"
 #include "threadPool.h"
 
-
 void hello (void* a)
 {
    printf("hello\n");
@@ -16,7 +15,7 @@ void test_thread_pool_sanity()
    
    ThreadPool* tp = tpCreate(5);
    
-   for(i=0; i<5; ++i)
+   for(i=0; i<20; ++i)
    {
       tpInsertTask(tp,hello,NULL);
    }

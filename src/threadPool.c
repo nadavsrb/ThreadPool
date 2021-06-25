@@ -44,7 +44,7 @@ void* doTasks(void *threadPoolVoid)
                 pthread_exit(THREAD_ERROR_VAL);
         }
 
-        if(!threadPool->isStopped && osIsQueueEmpty(threadPool->tasksQueue)){
+        if((!threadPool->isStopped) && osIsQueueEmpty(threadPool->tasksQueue)){
             if(pthread_cond_wait(&threadPool->cond,&threadPool->condMutex) != 0) {
                 handleError(threadPool);
                 pthread_exit(THREAD_ERROR_VAL);
@@ -80,14 +80,18 @@ void stopDoTasks(void* threadPoolVoid){
     ThreadPool* threadPool = (ThreadPool*) threadPoolVoid;
     if(pthread_mutex_lock(&threadPool->condMutex) != 0) {
         handleError(threadPool);
-        return ERROR;
+        return;
     }
 
     threadPool->isStopped = TRUE;
 
     if(pthread_mutex_unlock(&threadPool->condMutex) != 0) {
         handleError(threadPool);
-        return ERROR;
+        return;
+    }
+
+    if(pthread_cond_broadcast(&threadPool->cond) != 0) {
+        handleError(threadPool);
     }
 }
 
@@ -106,7 +110,7 @@ ThreadPool* tpCreate(int numOfThreads){
     }
 
     threadPool->tasksQueue = osCreateQueue();
-    if(threadPool->tasksQueue = NULL){
+    if(threadPool->tasksQueue == NULL){
         perror("Error: tpCreate: osCreateQueue: osCreateQueue failed");
         free(threadPool->threadsIds);
         free(threadPool);
@@ -134,10 +138,10 @@ ThreadPool* tpCreate(int numOfThreads){
     threadPool->isStopped = FALSE;
     threadPool->isThreadErrorOccurred = FALSE;
     threadPool->numOfThreads = numOfThreads;
-    
+
     int index;
     for(index = 0; index < threadPool->numOfThreads; ++index){
-        if(pthread_create(&threadPool->tasksQueue[index],
+        if(pthread_create(&threadPool->threadsIds[index],
          NULL, doTasks, (void *) threadPool) != 0){
              perror("Error: tpCreate: pthread_create: failed creating a thread");
              tpDestroy(threadPool, 0);
@@ -152,15 +156,13 @@ void tpDestroy(ThreadPool* threadPool, int shouldWaitForTasks){
     if(threadPool == NULL){
         return;
     }
-    
-    threadPool->isDestroyed = TRUE;
 
     if(pthread_mutex_lock(&threadPool->condMutex) != 0) {
         handleError(threadPool);
         return;
     }
 
-    if(!shouldWaitForTasks){
+    if(shouldWaitForTasks == 0){
         while(!osIsQueueEmpty(threadPool->tasksQueue)){
             Task* t = (Task*) osDequeue(threadPool->tasksQueue);
             destroyTask(t);
@@ -173,6 +175,26 @@ void tpDestroy(ThreadPool* threadPool, int shouldWaitForTasks){
     }
 
     tpInsertTask(threadPool, stopDoTasks, (void*) threadPool);
+
+    threadPool->isDestroyed = TRUE;
+
+    int index;
+    BOOL isErrorOccurred = FALSE;
+    int myId = pthread_self();
+    for(index = 0; index < threadPool->numOfThreads; ++index){
+        if(threadPool->threadsIds[index] == myId){
+            continue;
+        }
+
+        if(isErrorOccurred){
+            pthread_cancel(threadPool->threadsIds[index]);
+        }
+
+        if(pthread_join(threadPool->threadsIds[index], NULL) != 0) {
+            perror("Error: tpDestroy: failed to join a thread");
+            isErrorOccurred = TRUE;
+        }
+    }
 }
 
 int tpInsertTask(ThreadPool* threadPool, void (*computeFunc) (void *), void* param){
