@@ -394,13 +394,17 @@ void tpDestroy(ThreadPool* threadPool, int shouldWaitForTasks){
     // all threads in Thread Pool are dead
     // and no one else will touch it because 
     // threadPool->isDestroyed = TRUE
-    // so no mutex is needed
+    // so no mutex is needed, but for safety we would try
+    // to look but we wont check errors (because we don't must
+    // to lock)
 
+    pthread_mutex_lock(&threadPool->condMutex);
     //clears the queue.
     while(!osIsQueueEmpty(threadPool->tasksQueue)){
         Task* t = (Task*) osDequeue(threadPool->tasksQueue);
         destroyTask(t);
     }
+    pthread_mutex_unlock(&threadPool->condMutex);
 
     //frees allocated memory:
     pthread_mutex_destroy(&threadPool->condMutex);
